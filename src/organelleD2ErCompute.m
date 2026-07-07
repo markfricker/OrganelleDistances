@@ -197,6 +197,16 @@ for iO = 1:nO
     plotPointsCell{iO} = [nan nan; points(:,1:2)];
 end
 
+% Overlap area is computed from the raw, unsmoothed pixel mask, while
+% distance comes from a spline-smoothed/resampled ray-cast -- a small
+% overlap can fall between the sampled perimeter points and be missed by
+% the ray-cast, reporting a small positive distance despite genuinely
+% touching the ER. Overlap implies zero distance by definition, so it
+% overrides whatever the ray-cast found.
+hasOverlap = stats.organelleErOverlapArea > 0;
+stats.organelleErDistancePix(hasOverlap) = 0;
+stats.organelleErDistance(hasOverlap)    = 0;
+
 plotLines  = cat(1, plotLinesCell{:});
 plotPoints = cat(1, plotPointsCell{:});
 
