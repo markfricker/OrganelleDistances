@@ -61,7 +61,14 @@ for iT = 1:nT
                 continue
             end
 
-            mask = cellBoundary(:,:, min(iCh,bC), min(iZ,bZ), min(iT,bT));
+            % Fill internal holes (nucleus, vacuole, any segmentation gap)
+            % before tracing -- this metric means distance to the outer
+            % plasma membrane. Without filling, bwboundaries also traces
+            % hole edges, and any organelle sitting against a hole (e.g.
+            % perinuclear mitochondria, which cluster centrally) gets
+            % flagged as touching "outside" and reports 0 even though it
+            % may be tens of pixels from the true cell edge.
+            mask = imfill(cellBoundary(:,:, min(iCh,bC), min(iZ,bZ), min(iT,bT)), 'holes');
             if ~any(mask(:)) || all(mask(:))
                 % no boundary in frame (mask absent, or nothing outside it)
                 stats = statsIn;
