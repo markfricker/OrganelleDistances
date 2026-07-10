@@ -137,6 +137,29 @@ for iO = 1:nO
 
     srcContour = contourFromPerimeterIdx(perim, imSize);
 
+    % Pinpoint exactly which object and which raw perimeter indices are
+    % responsible before this reaches computeSplineNormals's generic
+    % (caller-blind) non-finite check further down the call chain.
+    if any(~isfinite(srcContour(:)))
+        objID = NaN;
+        if ismember('organelleID', statsIn.Properties.VariableNames)
+            objID = statsIn.organelleID(iO);
+        end
+        perimD = double(perim(:));
+        outOfRange = ~isfinite(perimD) | perimD < 1 | perimD > prod(imSize);
+        badPerimVals = perimD(outOfRange);
+        error('organelleD2OrganelleCompute:nonFiniteSrcContour', ...
+            ['Object iO=%d (organelleID=%s) decoded to a non-finite contour. ' ...
+            'numel(perim)=%d, min(perim)=%s, max(perim)=%s, prod(imSize)=%d, imSize=[%d %d], ' ...
+            '%d perim value(s) outside [1, prod(imSize)] or non-finite (first few: %s). ' ...
+            'Such a value decodes to NaN via ind2sub without erroring -- check ' ...
+            'organellePerimeterIdxList for this object against the imSize ' ...
+            'actually passed in.'], ...
+            iO, num2str(objID), numel(perim), num2str(min(perimD)), num2str(max(perimD)), ...
+            prod(imSize), imSize(1), imSize(2), ...
+            numel(badPerimVals), mat2str(badPerimVals(1:min(10,end))'));
+    end
+
     if span > 1
         rayOpts.numSamples = max(8, round(numel(perim) / span));
     else

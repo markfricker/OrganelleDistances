@@ -1,10 +1,10 @@
 function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2BoundaryCompute( ...
-    morphologyStats, cellBoundary, Cidx, calibration, span, radius)
+    morphologyStats, imSize, cellBoundary, Cidx, calibration, span, radius)
 %ORGANELLED2BOUNDARYCOMPUTE  Radial nearest-distance from organelle
 % membranes to the cell boundary.
 %
 %   [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = ...
-%       organelleD2BoundaryCompute(morphologyStats, cellBoundary, Cidx, calibration, span, radius)
+%       organelleD2BoundaryCompute(morphologyStats, imSize, cellBoundary, Cidx, calibration, span, radius)
 %
 % Casts outward rays from a spline-smoothed resampling of every object's
 % perimeter and finds the nearest intersection with the cell boundary
@@ -20,7 +20,12 @@ function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2
 %   morphologyStats – {nC_in x nZ x nT} cell array of organelle stats
 %                     tables. Each table must have
 %                     .organellePerimeterIdxList.
-%   cellBoundary    – [nY x nX x bC x bZ x bT] logical; TRUE = inside the
+%   imSize          – [nY nX]; size of the 2-D organelle image plane the
+%                     PerimeterIdxList entries are linear into (matches
+%                     organelleD2OrganelleCompute's imSize argument --
+%                     NOT necessarily the same size as cellBoundary; see
+%                     the size-mismatch check below).
+%   cellBoundary    – [nYb x nXb x bC x bZ x bT] logical; TRUE = inside the
 %                     cell (same convention as organelleBoundaryFlag /
 %                     app.images.cellBoundary). May be static (bT==1).
 %   Cidx            – [1 x nCh] channel indices into morphologyStats.
@@ -45,7 +50,25 @@ function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2
 
 [nC_in, nZ, nT] = size(morphologyStats);
 nCh = numel(Cidx);
-[nY, nX, bC, bZ, bT] = size(cellBoundary);
+nY  = imSize(1);
+nX  = imSize(2);
+[nYb, nXb, bC, bZ, bT] = size(cellBoundary);
+
+% cellBoundary must share the organelle image's pixel grid -- ray-casting
+% from an organelle's perimeter to the cell boundary is only meaningful
+% if both are the same crop/resample. A mismatch here means cellBoundary
+% is stale or was computed from a different processing stage (e.g. not
+% re-run after a re-crop); previously this silently corrupted every
+% organelle's decoded perimeter via ind2sub against the wrong image size,
+% scattering points and reporting distance 0 for many unrelated objects.
+if nYb ~= nY || nXb ~= nX
+    warning('organelleD2BoundaryCompute:sizeMismatch', ...
+        ['cellBoundary is [%d x %d] but the organelle image is [%d x %d] -- ' ...
+        'cellBoundary looks stale or was computed from a different ' ...
+        'processing stage. organelleBoundaryDistance results will be ' ...
+        'wrong until cellBoundary is recomputed to match the current ' ...
+        'organelle segmentation.'], nYb, nXb, nY, nX);
+end
 
 d2BoundaryStats = cell(nCh, nZ, nT);
 plotLines       = cell(nCh, nZ, nT);
@@ -90,7 +113,7 @@ for iT = 1:nT
             maskVec = mask(:);
 
             [stats, pLines, pPoints] = planeD2Boundary( ...
-                statsIn, boundaryPoly, maskVec, nY, nX, calibration, span, radius);
+                statsIn, boundaryPoly, maskVec, [nY nX], [nYb nXb], calibration, span, radius);
 
             d2BoundaryStats{iCh, iZ, iT} = stats;
             morphologyStats{iC, iZ, iT}  = stats;
@@ -105,8 +128,15 @@ end % organelleD2BoundaryCompute
 
 % =========================================================================
 function [stats, plotLines, plotPoints] = planeD2Boundary( ...
-    statsIn, boundaryPoly, maskVec, nY, nX, calibration, span, radius)
+    statsIn, boundaryPoly, maskVec, orgSize, bSize, calibration, span, radius)
 %PLANED2BOUNDARY  Single-plane worker — see organelleD2BoundaryCompute for docs.
+%
+% orgSize decodes the organelle's OWN PerimeterIdxList (must match the
+% image the organelle segmentation/regionprops actually ran on); bSize
+% indexes into maskVec, which is linearised from the cellBoundary-derived
+% mask and so must use cellBoundary's own size. These are deliberately
+% kept separate -- collapsing them back into one shared size is exactly
+% the bug this function was fixed for.
 
 perimList = statsIn.organellePerimeterIdxList;
 nO        = height(statsIn);
@@ -130,7 +160,7 @@ for iO = 1:nO
         continue
     end
 
-    srcContour = contourFromPerimeterIdx(perim, [nY nX]);
+    srcContour = contourFromPerimeterIdx(perim, orgSize);
 
     if span > 1
         rayOpts.numSamples = max(8, round(numel(perim) / span));
@@ -141,8 +171,8 @@ for iO = 1:nO
     [dist, hitPts, sampled] = normalsToNearestIntersectionSpline(srcContour, boundaryPoly, rayOpts);
 
     % points already outside the cell mask: zero distance, self as hit
-    sampledLin = sub2ind([nY nX], ...
-        min(max(round(sampled(:,1)),1),nY), min(max(round(sampled(:,2)),1),nX));
+    sampledLin = sub2ind(bSize, ...
+        min(max(round(sampled(:,1)),1),bSize(1)), min(max(round(sampled(:,2)),1),bSize(2)));
     outside = ~maskVec(sampledLin);
     dist(outside)      = 0;
     hitPts(outside, :) = sampled(outside, :);

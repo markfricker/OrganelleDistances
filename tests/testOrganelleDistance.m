@@ -11,7 +11,7 @@ classdef testOrganelleDistance < matlab.unittest.TestCase
 %   otherObjectsPolyline / contourFromPerimeterIdx            — 2 tests
 %   organelleD2ErCompute                                      — 3 tests
 %   organelleD2OrganelleCompute                                — 4 tests
-%   organelleD2BoundaryCompute                                 — 3 tests
+%   organelleD2BoundaryCompute                                 — 4 tests
 %
 % REQUIREMENTS
 %   MATLAB R2019b+ (matlab.unittest framework)
@@ -245,7 +245,7 @@ classdef testOrganelleDistance < matlab.unittest.TestCase
             statsIn = tc.statsFromLabelIm(labelIm);
             morphologyStats = {statsIn};
 
-            morphOut = organelleD2BoundaryCompute(morphologyStats, cellImg, 1, 1, 1, 150);
+            morphOut = organelleD2BoundaryCompute(morphologyStats, imSize, cellImg, 1, 1, 1, 150);
             stats = morphOut{1};
 
             expectedDist = cx - r - 10;   % nearest wall is the left edge at col=10
@@ -264,7 +264,7 @@ classdef testOrganelleDistance < matlab.unittest.TestCase
             statsIn = tc.statsFromLabelIm(labelIm);
             morphologyStats = {statsIn};
 
-            morphOut = organelleD2BoundaryCompute(morphologyStats, cellImg, 1, 1, 1, 150);
+            morphOut = organelleD2BoundaryCompute(morphologyStats, imSize, cellImg, 1, 1, 1, 150);
             stats = morphOut{1};
 
             tc.verifyEqual(stats.organelleBoundaryDistance(1), 0);
@@ -282,11 +282,51 @@ classdef testOrganelleDistance < matlab.unittest.TestCase
             statsIn = tc.statsFromLabelIm(labelIm);
             morphologyStats = {statsIn};
 
-            morphOut = organelleD2BoundaryCompute(morphologyStats, cellImg, 1, 1, 1, 150);
+            morphOut = organelleD2BoundaryCompute(morphologyStats, imSize, cellImg, 1, 1, 1, 150);
             stats = morphOut{1};
             radial = stats.organelleBoundaryRadialIdxList{1};
 
             tc.verifyEqual(min(radial(:,3)), stats.organelleBoundaryDistancePix(1), 'AbsTol', 1e-9);
+        end
+
+        function testD2BoundaryStaleCellBoundaryWarnsAndDecodesCorrectly(tc)
+            % Regression test for the ind2sub-decode bug: cellBoundary's
+            % own array size must NOT be used to decode the organelle's
+            % own PerimeterIdxList (that's imSize's job). Pads cellImg to
+            % a DIFFERENT array size than imSize while keeping the actual
+            % wall at the same absolute pixel coordinates as
+            % testD2BoundaryKnownDistance -- before the fix, using
+            % cellBoundary's (larger) size to decode the organelle's own
+            % perimeter indices via ind2sub scrambled the organelle's
+            % contour coordinates and gave a wrong/garbled distance;
+            % after the fix, imSize is used for that decode and the
+            % result is unaffected by cellBoundary's own array size,
+            % matching the known geometric distance exactly.
+            imSize = tc.ImSize;
+            [X, Y] = meshgrid(1:imSize(2), 1:imSize(1));
+            cellMask = X >= 10 & X <= 150 & Y >= 10 & Y <= 190;
+
+            padCols = 50;
+            cellMaskPadded = [cellMask, false(imSize(1), padCols)];
+            cellImgPadded  = reshape(cellMaskPadded, imSize(1), imSize(2)+padCols, 1, 1, 1);
+
+            cx = 60; cy = 100; r = 15;
+            labelIm = zeros(imSize);
+            labelIm((X-cx).^2 + (Y-cy).^2 <= r^2) = 1;
+            statsIn = tc.statsFromLabelIm(labelIm);
+            morphologyStats = {statsIn};
+
+            tc.verifyWarning( ...
+                @() organelleD2BoundaryCompute(morphologyStats, imSize, cellImgPadded, 1, 1, 1, 150), ...
+                'organelleD2BoundaryCompute:sizeMismatch');
+
+            warnState = warning('off', 'organelleD2BoundaryCompute:sizeMismatch');
+            cleanupObj = onCleanup(@() warning(warnState)); %#ok<NASGU>
+            morphOut = organelleD2BoundaryCompute(morphologyStats, imSize, cellImgPadded, 1, 1, 1, 150);
+            stats = morphOut{1};
+
+            expectedDist = cx - r - 10;
+            tc.verifyEqual(stats.organelleBoundaryDistance(1), expectedDist, 'AbsTol', tc.DistTol);
         end
     end
 
