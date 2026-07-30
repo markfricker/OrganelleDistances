@@ -16,10 +16,25 @@ function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2
 % cortical vs. perinuclear mitochondria by how far they sit from the
 % plasma membrane.
 %
+% A ray only finds boundary that happens to lie along a sample point's own
+% local outward normal -- boundary sitting immediately adjacent but
+% off-axis from that direction can be missed even though it's touching or
+% nearly touching. A very small (1-2px), direction-agnostic distance-
+% transform rescue catches exactly that case (see rescueRadiusPix in
+% planeD2Boundary); it only ever improves on the ray-cast's own answer
+% within that tiny tolerance, so every other case is unaffected.
+%
+% Whichever candidate wins (ray-cast or rescue) is also checked against
+% every OTHER organelle in the plane (segmentsCrossOtherOrganelles): a
+% straight line that cuts through another organelle's own bulk on the way
+% to the cell wall isn't a legitimate "unobstructed access" answer, even
+% though the endpoint itself is genuinely the nearest boundary pixel in
+% that direction. Obstructed points report NaN, same as "nothing found".
+%
 % INPUTS
 %   morphologyStats – {nC_in x nZ x nT} cell array of organelle stats
 %                     tables. Each table must have
-%                     .organellePerimeterIdxList.
+%                     .organellePerimeterIdxList and .organellePixelIdxList.
 %   imSize          – [nY nX]; size of the 2-D organelle image plane the
 %                     PerimeterIdxList entries are linear into (matches
 %                     organelleD2OrganelleCompute's imSize argument --
@@ -30,8 +45,10 @@ function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2
 %                     app.images.cellBoundary). May be static (bT==1).
 %   Cidx            – [1 x nCh] channel indices into morphologyStats.
 %   calibration     – scalar µm per pixel.
-%   span            – perimeter sample-density control (px), same
-%                     meaning as in organelleD2ErCompute.
+%   span            – tangent/normal smoothing window (px), same meaning
+%                     as in organelleD2ErCompute -- decoupled from ray
+%                     density, which is always full (one per raw
+%                     perimeter pixel).
 %   radius          – outward ray search length (px). Objects farther
 %                     from the boundary than this get NaN -- raise it for
 %                     large cells / deeply interior mitochondria.
@@ -139,6 +156,7 @@ function [stats, plotLines, plotPoints] = planeD2Boundary( ...
 % the bug this function was fixed for.
 
 perimList = statsIn.organellePerimeterIdxList;
+pixList   = statsIn.organellePixelIdxList;
 nO        = height(statsIn);
 
 stats = statsIn;
@@ -152,6 +170,27 @@ plotPointsCell = cell(nO,1);
 rayOpts          = struct();
 rayOpts.maxRange = radius;
 
+% Very small (1-2px), direction-agnostic rescue for the one specific case
+% the ray-cast is known to miss: boundary sitting immediately adjacent to
+% a boundary point but off-axis from that point's local outward normal
+% (same mechanism as organelleD2ErCompute's ER rescue, applied to the
+% cell-boundary mask instead). bwdist(~mask2D) gives, for any point
+% inside the cell, the distance to the nearest OUTSIDE pixel -- exactly
+% the boundary distance. Only ever improves on the ray-cast's own answer
+% within this tiny tolerance.
+rescueRadiusPix       = 2;
+mask2D                = reshape(maskVec, bSize);
+[DRescue, idxRescue]  = bwdist(~mask2D);
+
+% Whole-plane label image (every organelle's own pixels marked with its
+% own row index, in the organelle image's own coordinate space -- orgSize,
+% same space perimeters/pixels are decoded in), for the other-organelle
+% obstruction check below.
+Lorg = zeros(orgSize, 'int32');
+for k = 1:nO
+    Lorg(pixList{k}) = k;
+end
+
 for iO = 1:nO
     perim = perimList{iO,1};
     if numel(perim) < 3
@@ -162,18 +201,39 @@ for iO = 1:nO
 
     srcContour = contourFromPerimeterIdx(perim, orgSize);
 
-    if span > 1
-        rayOpts.numSamples = max(8, round(numel(perim) / span));
-    else
-        rayOpts.numSamples = numel(perim);
-    end
+    % Ray/plot density is now always full (one sample per raw perimeter
+    % pixel) -- `span` no longer trades off density against tangent
+    % stability, it controls only the smoothing window.
+    rayOpts.numSamples   = numel(perim);
+    rayOpts.smoothSpanPx = max(span, 1);
 
     [dist, hitPts, sampled] = normalsToNearestIntersectionSpline(srcContour, boundaryPoly, rayOpts);
 
-    % points already outside the cell mask: zero distance, self as hit
     sampledLin = sub2ind(bSize, ...
         min(max(round(sampled(:,1)),1),bSize(1)), min(max(round(sampled(:,2)),1),bSize(2)));
     outside = ~maskVec(sampledLin);
+
+    % rescue: boundary within 1-2px that the ray-cast's normal direction
+    % missed (only applies to points still inside the cell -- points
+    % already outside get distance 0 below regardless).
+    rescueDist = double(DRescue(sampledLin));
+    useRescue  = ~outside & rescueDist <= rescueRadiusPix & (isnan(dist) | rescueDist < dist);
+    if any(useRescue)
+        [rescueRow, rescueCol] = ind2sub(bSize, idxRescue(sampledLin(useRescue)));
+        dist(useRescue)      = rescueDist(useRescue);
+        hitPts(useRescue, 1) = rescueRow;
+        hitPts(useRescue, 2) = rescueCol;
+    end
+
+    % other-organelle obstruction: the straight line to the winning hit
+    % may cut through some OTHER organelle's own bulk on the way -- not a
+    % legitimate "unobstructed" answer (skip points already outside the
+    % cell, which get distance 0 below regardless).
+    obstructedByOrganelle = ~outside & segmentsCrossOtherOrganelles(sampled, hitPts, Lorg, iO);
+    dist(obstructedByOrganelle)      = NaN;
+    hitPts(obstructedByOrganelle, :) = NaN;
+
+    % points already outside the cell mask: zero distance, self as hit
     dist(outside)      = 0;
     hitPts(outside, :) = sampled(outside, :);
 

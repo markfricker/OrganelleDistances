@@ -1,11 +1,33 @@
-function [sampledContour, normals] = computeSplineNormals(contour, numSamples)
+function [sampledContour, normals] = computeSplineNormals(contour, numSamples, smoothSpanPx)
 % COMPUTESPLINENORMALS
-% Resample a closed contour using a spline-smoothed periodic approximation,
-% then return unit tangent-normal pairs.
+% Spline-interpolate a closed contour, resample it at numSamples output
+% points, and return a unit tangent-normal pair at each.
 %
-% contour: Nx2 [row col], closed (first point = last point)
-% sampledContour: numSamples x 2 [row col]
-% normals: numSamples x 2 unit normals [row col]
+% contour        : Nx2 [row col], closed (first point = last point)
+% numSamples     : number of output points (ray/plot density).
+% smoothSpanPx   : (optional) arc-length window, in pixels, used to
+%                  estimate each tangent via a centered finite difference.
+%                  Decoupled from numSamples: the spline itself always
+%                  interpolates exactly through every input contour point
+%                  (no curve-smoothing happens there), so at full output
+%                  density a naive gradient() between adjacent OUTPUT
+%                  points would just be differencing immediately-adjacent
+%                  raw pixels -- exactly the per-pixel staircase noise a
+%                  "smooth" control is supposed to avoid. This window
+%                  fixes the tangent-estimation baseline at a constant
+%                  pixel distance regardless of how densely numSamples
+%                  samples the same curve.
+%                  Default (omitted/[]): totalArcLength/numSamples, i.e.
+%                  the legacy behaviour where smoothing tracked output
+%                  spacing -- kept only for callers that don't know about
+%                  this parameter.
+%
+% sampledContour : numSamples x 2 [row col]
+% normals        : numSamples x 2 unit normals [row col]
+
+    if nargin < 3
+        smoothSpanPx = [];
+    end
 
     contour = double(contour);
 
@@ -31,20 +53,32 @@ function [sampledContour, normals] = computeSplineNormals(contour, numSamples)
     x = contour(1:end-1, 2);   % col
     y = contour(1:end-1, 1);   % row
 
-    % Arc-length parameter
+    % Arc-length parameter, in pixels, before normalising to [0,1]
     ds = sqrt(diff(x).^2 + diff(y).^2);
     t = [0; cumsum(ds)];
     if t(end) == 0
         error('Contour has zero length.');
     end
-    t = t / t(end);
+    totalLenPx = t(end);
 
-    % Closed, uniformly spaced sample locations
+    if isempty(smoothSpanPx)
+        smoothSpanPx = totalLenPx / numSamples;   % legacy-equivalent default
+    end
+    halfWindowNorm = (smoothSpanPx / 2) / totalLenPx;
+
+    t = t / totalLenPx;
+
+    % Closed, uniformly spaced output sample locations
     tq = linspace(0, 1, numSamples + 1).';
     tq(end) = [];
 
-    % Cyclic padding to reduce endpoint artifacts with interp1(...,'spline')
-    pad = min(3, numel(t) - 1);
+    % Cyclic padding to reduce endpoint artifacts with interp1(...,'spline').
+    % Must cover at least the smoothing half-window (plus a small margin),
+    % not just a fixed handful of original segments -- otherwise a wide
+    % smoothing window queries interp1 outside the padded domain.
+    avgSegNorm = 1 / (numel(t) - 1);
+    padNeeded  = ceil((halfWindowNorm + 2 * avgSegNorm) / avgSegNorm);
+    pad        = min(max(padNeeded, 3), numel(t) - 1);
 
     tPad = [t(end-pad:end-1) - 1; t; t(2:pad+1) + 1];
     xPad = [x(end-pad:end-1); x; x(2:pad+1)];
@@ -66,9 +100,17 @@ function [sampledContour, normals] = computeSplineNormals(contour, numSamples)
     xs = interp1(tPad, xPad, tq, 'spline');
     ys = interp1(tPad, yPad, tq, 'spline');
 
-    % Tangent from spline-smoothed contour
-    dx = gradient(xs);
-    dy = gradient(ys);
+    % Tangent via a centered finite difference over the fixed smoothing
+    % window, independent of how densely tq itself is sampled.
+    tqPlus  = tq + halfWindowNorm;
+    tqMinus = tq - halfWindowNorm;
+    xPlus  = interp1(tPad, xPad, tqPlus,  'spline');
+    xMinus = interp1(tPad, xPad, tqMinus, 'spline');
+    yPlus  = interp1(tPad, yPad, tqPlus,  'spline');
+    yMinus = interp1(tPad, yPad, tqMinus, 'spline');
+
+    dx = xPlus - xMinus;
+    dy = yPlus - yMinus;
 
     tangent = [dy, dx];  % [row col] order
     tangent = tangent ./ (sqrt(sum(tangent.^2, 2)) + eps);

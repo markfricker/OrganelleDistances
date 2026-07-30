@@ -13,6 +13,22 @@ function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErComp
 % normalsToNearestIntersectionSpline ray-cast core (also used by
 % organelleD2OrganelleCompute for mito-to-mito distance).
 %
+% A ray only finds ER that happens to lie along a sample point's own
+% local outward normal -- ER sitting immediately adjacent but off-axis
+% from that direction can be missed even though it's touching or nearly
+% touching. A very small (1-2px), direction-agnostic distance-transform
+% rescue catches exactly that case (see rescueRadiusPix in planeD2Er); it
+% only ever improves on the ray-cast's own answer within that tiny
+% tolerance, so every other case -- including the normal-to-surface
+% appearance of the overlay -- is unaffected.
+%
+% Whichever candidate wins (ray-cast or rescue) is also checked against
+% every OTHER organelle in the plane (segmentsCrossOtherOrganelles): a
+% straight line that cuts through another organelle's own bulk on the way
+% to the ER isn't a legitimate "unobstructed access" answer, even though
+% the endpoint itself is genuinely the nearest ER pixel in that direction.
+% Obstructed points report NaN, same as "nothing found".
+%
 % INPUTS
 %   morphologyStats – {nC_in x nZ x nT} cell array of organelle stats tables.
 %                     Each table must have .organellePixelIdxList and
@@ -23,10 +39,12 @@ function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErComp
 %   edgelist        – {eC x eZ x eT} cell array of tubule vertex lists.
 %   Cidx            – [1 x nCh] channel indices into morphologyStats.
 %   calibration     – scalar µm per pixel.
-%   span            – perimeter sample-density control (px). Higher span
-%                     -> fewer, smoother spline samples around each
-%                     perimeter (numSamples = max(8, round(nPerim/span))).
-%                     span<=1 keeps one sample per raw perimeter pixel.
+%   span            – tangent/normal smoothing window (px). Rays are
+%                     always cast at full density (one per raw perimeter
+%                     pixel) -- this only controls how far along the arc
+%                     the outward-normal direction is averaged, decoupled
+%                     from ray count. Larger span -> smoother-looking
+%                     (less pixel-jagged) normals.
 %   radius          – outward ray search length (px) -- maps directly to
 %                     the ray-cast core's opts.maxRange.
 %
@@ -151,6 +169,27 @@ plotPointsCell = cell(nO,1);
 rayOpts          = struct();
 rayOpts.maxRange = radius;
 
+% Very small (1-2px), direction-agnostic rescue for the one specific case
+% the ray-cast is known to miss: ER sitting immediately adjacent to a
+% boundary point but off-axis from that point's local outward normal, so
+% no ray happens to cross it even though it's touching or nearly
+% touching. This only ever improves on the ray-cast's own answer (closer,
+% and within this tiny tolerance) -- everything beyond it is left
+% entirely to the unmodified ray-cast below, exactly as before.
+rescueRadiusPix      = 2;
+erMask2D             = reshape(erMaskVec, nY, nX);
+[DRescue, idxRescue] = bwdist(erMask2D);
+
+% Whole-plane label image (every organelle's own pixels marked with its
+% own row index), so a winning hit can be checked for whether the
+% straight line to it passes through some OTHER organelle's own bulk --
+% not a legitimate "unobstructed" answer even though the endpoint itself
+% is a valid ER pixel.
+Lorg = zeros(nY, nX, 'int32');
+for k = 1:nO
+    Lorg(pixList{k}) = k;
+end
+
 for iO = 1:nO
     perim = perimList{iO,1};
     if numel(perim) < 3
@@ -161,11 +200,11 @@ for iO = 1:nO
 
     srcContour = contourFromPerimeterIdx(perim, [nY nX]);
 
-    if span > 1
-        rayOpts.numSamples = max(8, round(numel(perim) / span));
-    else
-        rayOpts.numSamples = numel(perim);
-    end
+    % Ray/plot density is now always full (one sample per raw perimeter
+    % pixel) -- `span` no longer trades off density against tangent
+    % stability, it controls only the smoothing window below.
+    rayOpts.numSamples   = numel(perim);
+    rayOpts.smoothSpanPx = max(span, 1);
 
     [dist, hitPts, sampled] = normalsToNearestIntersectionSpline(srcContour, ER, rayOpts);
 
@@ -175,6 +214,24 @@ for iO = 1:nO
     onEr = erMaskVec(sampledLin);
     dist(onEr)      = 0;
     hitPts(onEr, :) = sampled(onEr, :);
+
+    % rescue: ER within 1-2px that the ray-cast's normal direction missed
+    rescueDist = double(DRescue(sampledLin));
+    useRescue  = ~onEr & rescueDist <= rescueRadiusPix & (isnan(dist) | rescueDist < dist);
+    if any(useRescue)
+        [rescueRow, rescueCol] = ind2sub([nY nX], idxRescue(sampledLin(useRescue)));
+        dist(useRescue)      = rescueDist(useRescue);
+        hitPts(useRescue, 1) = rescueRow;
+        hitPts(useRescue, 2) = rescueCol;
+    end
+
+    % other-organelle obstruction: the straight line to the winning hit
+    % may cut through some OTHER organelle's own bulk on the way -- not a
+    % legitimate "unobstructed" answer even though the endpoint itself is
+    % a valid ER pixel.
+    obstructed = ~onEr & segmentsCrossOtherOrganelles(sampled, hitPts, Lorg, iO);
+    dist(obstructed)      = NaN;
+    hitPts(obstructed, :) = NaN;
 
     points = [hitPts(:,2), hitPts(:,1), dist];   % [x y distance], matches legacy convention
 

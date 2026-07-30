@@ -14,7 +14,11 @@ function [distances, intersectionPoints, sourceSampled, normals, hitOwner] = nor
 %   targetContour : Kx2 [row col] ordered contour(s); NaN-separate
 %                   multiple disjoint closed curves
 %   opts          : struct with optional fields
-%       .numSamples  (default: size(sourceContour,1))
+%       .numSamples   (default: size(sourceContour,1))
+%       .smoothSpanPx (default: [] -- computeSplineNormals resolves its
+%                      own legacy-equivalent default) arc-length window,
+%                      in pixels, for tangent/normal estimation,
+%                      decoupled from .numSamples -- see computeSplineNormals.
 %       .maxRange    (default: 500)
 %       .chunkSize   (default: 200)
 %       .pad         (default: 5)
@@ -39,6 +43,9 @@ function [distances, intersectionPoints, sourceSampled, normals, hitOwner] = nor
     if ~isfield(opts, 'numSamples') || isempty(opts.numSamples)
         opts.numSamples = size(sourceContour, 1);
     end
+    if ~isfield(opts, 'smoothSpanPx')
+        opts.smoothSpanPx = [];
+    end
     if ~isfield(opts, 'maxRange') || isempty(opts.maxRange)
         opts.maxRange = 500;
     end
@@ -59,7 +66,7 @@ function [distances, intersectionPoints, sourceSampled, normals, hitOwner] = nor
     end
 
     % Spline-resample source contour and compute normals
-    [sourceSampled, normals] = computeSplineNormals(sourceContour, opts.numSamples);
+    [sourceSampled, normals] = computeSplineNormals(sourceContour, opts.numSamples, opts.smoothSpanPx);
 
     % Flip normals outward using centroid test
     centroid = mean(sourceSampled, 1);

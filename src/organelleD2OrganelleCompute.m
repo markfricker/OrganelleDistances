@@ -26,6 +26,20 @@ function [morphologyStats, d2OrganelleStats, plotLines, plotPoints] = organelleD
 % columns — plottable, exportable, and colour-fillable exactly like any
 % other metric, instead of living in a separate all-pairs graph object.
 %
+% A ray only finds a neighbour that happens to lie along a sample point's
+% own local outward normal -- a neighbour sitting immediately adjacent but
+% off-axis from that direction can be missed even though it's touching or
+% nearly touching. A very small (1-2px), direction-agnostic rescue against
+% a per-object label crop catches exactly that case (see rescueRadiusPix
+% in planeD2Organelle); it only ever improves on the ray-cast's own answer
+% within that tiny tolerance, so every other case is unaffected.
+%
+% Whichever candidate wins (ray-cast or rescue) is also checked against
+% every OTHER organelle in the plane (segmentsCrossOtherOrganelles): a
+% straight line that cuts through a third organelle's own bulk on the way
+% to the chosen neighbour isn't a legitimate "unobstructed access" answer.
+% Obstructed points report NaN, same as "nothing found".
+%
 % INPUTS
 %   morphologyStats – {nC_in x nZ x nT} cell array of organelle stats
 %                     tables. Each table must have
@@ -34,8 +48,10 @@ function [morphologyStats, d2OrganelleStats, plotLines, plotPoints] = organelleD
 %                     linear indices were traced on.
 %   Cidx            – [1 x nCh] channel indices into morphologyStats.
 %   calibration     – scalar µm per pixel.
-%   span            – perimeter sample-density control (px), same
-%                     meaning as in organelleD2ErCompute.
+%   span            – tangent/normal smoothing window (px), same meaning
+%                     as in organelleD2ErCompute -- decoupled from ray
+%                     density, which is always full (one per raw
+%                     perimeter pixel).
 %   radius          – outward ray search length (px). Also used, with a
 %                     margin, as a coarse centroid-distance prefilter so
 %                     only plausibly-reachable neighbours are considered
@@ -104,6 +120,7 @@ function [stats, plotLines, plotPoints] = planeD2Organelle( ...
 
 perimList = statsIn.organellePerimeterIdxList;
 centroids = statsIn.organelleCentroid;   % [x y]
+pixList   = statsIn.organellePixelIdxList;
 nO        = height(statsIn);
 
 stats = statsIn;
@@ -119,6 +136,21 @@ plotPointsCell = cell(nO,1);
 
 rayOpts          = struct();
 rayOpts.maxRange = radius;
+
+% Whole-plane label image (each organelle's own pixels marked with its own
+% row index), for the same small (1-2px), direction-agnostic rescue used
+% in organelleD2ErCompute: the ray-cast only finds a neighbour that
+% happens to lie along a boundary point's own local outward normal, so a
+% genuinely adjacent neighbour sitting off-axis from that direction can be
+% missed even though it's touching or nearly touching. Cropped to a small
+% local window per object (not a full-image bwdist) since the rescue
+% radius is tiny -- cheap, and the crop itself excludes the querying
+% object's own label, so there's no self-match risk.
+rescueRadiusPix = 2;
+L = zeros(imSize, 'int32');
+for k = 1:nO
+    L(pixList{k}) = k;
+end
 
 for iO = 1:nO
     perim = perimList{iO,1};
@@ -160,14 +192,51 @@ for iO = 1:nO
             numel(badPerimVals), mat2str(badPerimVals(1:min(10,end))'));
     end
 
-    if span > 1
-        rayOpts.numSamples = max(8, round(numel(perim) / span));
-    else
-        rayOpts.numSamples = numel(perim);
-    end
-    rayOpts.segOwner = segOwner;
+    % Ray/plot density is now always full (one sample per raw perimeter
+    % pixel) -- `span` no longer trades off density against tangent
+    % stability, it controls only the smoothing window below.
+    rayOpts.numSamples   = numel(perim);
+    rayOpts.smoothSpanPx = max(span, 1);
+    rayOpts.segOwner     = segOwner;
 
     [dist, hitPts, sampled, ~, hitOwner] = normalsToNearestIntersectionSpline(srcContour, targetPoly, rayOpts);
+
+    % rescue: nearest OTHER labeled organelle within a tiny local crop, for
+    % the case the ray-cast's normal direction missed a genuinely close
+    % neighbour that's touching or nearly touching.
+    sampledLin = sub2ind(imSize, ...
+        min(max(round(sampled(:,1)),1),imSize(1)), min(max(round(sampled(:,2)),1),imSize(2)));
+    [qr, qc] = ind2sub(imSize, sampledLin);
+    rMin = max(1, min(qr) - rescueRadiusPix - 1);
+    rMax = min(imSize(1), max(qr) + rescueRadiusPix + 1);
+    cMin = max(1, min(qc) - rescueRadiusPix - 1);
+    cMax = min(imSize(2), max(qc) + rescueRadiusPix + 1);
+    Lcrop = L(rMin:rMax, cMin:cMax);
+    otherMaskCrop = (Lcrop > 0) & (Lcrop ~= iO);
+    if any(otherMaskCrop(:))
+        [Dcrop, idxCrop] = bwdist(otherMaskCrop);
+        cropLin    = sub2ind(size(Lcrop), qr - rMin + 1, qc - cMin + 1);
+        rescueDist = double(Dcrop(cropLin));
+        useRescue  = rescueDist <= rescueRadiusPix & (isnan(dist) | rescueDist < dist);
+        if any(useRescue)
+            nearestLin = idxCrop(cropLin(useRescue));
+            [rRow, rCol] = ind2sub(size(Lcrop), nearestLin);
+            dist(useRescue)      = rescueDist(useRescue);
+            hitPts(useRescue, 1) = rRow + rMin - 1;
+            hitPts(useRescue, 2) = rCol + cMin - 1;
+            hitOwner(useRescue)  = double(Lcrop(nearestLin));
+        end
+    end
+
+    % other-organelle obstruction: the straight line to the winning
+    % neighbour may cut through some THIRD organelle's own bulk on the
+    % way -- not a legitimate "unobstructed" answer. Excludes both the
+    % source (self) and the target being reached (arriving at it
+    % necessarily touches its own pixels).
+    obstructed = segmentsCrossOtherOrganelles(sampled, hitPts, L, [repmat(iO, numel(dist), 1), hitOwner]);
+    dist(obstructed)      = NaN;
+    hitPts(obstructed, :) = NaN;
+    hitOwner(obstructed)  = NaN;
 
     points = [hitPts(:,2), hitPts(:,1), dist];   % [x y distance]
 
