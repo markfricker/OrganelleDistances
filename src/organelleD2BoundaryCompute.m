@@ -62,8 +62,11 @@ function [morphologyStats, d2BoundaryStats, plotLines, plotPoints] = organelleD2
 %                                        outside the cell mask)
 %   d2BoundaryStats     – {nCh x nZ x nT} cell array; same tables as
 %                         written into morphologyStats.
-%   plotLines           – {nCh x nZ x nT} cell array of [* x 2] overlay lines.
-%   plotPoints          – {nCh x nZ x nT} cell array of [* x 2] contact points.
+%   plotLines           – {nCh x nZ x nT} cell array of [* x 3] overlay
+%                         lines [x y distance] (distance repeated at both
+%                         ends of each ray).
+%   plotPoints          – {nCh x nZ x nT} cell array of [* x 3] contact
+%                         points [x y distance].
 
 [nC_in, nZ, nT] = size(morphologyStats);
 nCh = numel(Cidx);
@@ -118,8 +121,8 @@ for iT = 1:nT
                 stats.organelleBoundaryRadialIdxList = cell(nO,1);
                 d2BoundaryStats{iCh, iZ, iT} = stats;
                 morphologyStats{iC, iZ, iT}  = stats;
-                plotLines{iCh, iZ, iT}       = zeros(0,2);
-                plotPoints{iCh, iZ, iT}      = zeros(0,2);
+                plotLines{iCh, iZ, iT}       = zeros(0,3);
+                plotPoints{iCh, iZ, iT}      = zeros(0,3);
                 continue
             end
 
@@ -194,8 +197,8 @@ end
 for iO = 1:nO
     perim = perimList{iO,1};
     if numel(perim) < 3
-        plotLinesCell{iO}  = zeros(0,2);
-        plotPointsCell{iO} = zeros(0,2);
+        plotLinesCell{iO}  = zeros(0,3);
+        plotPointsCell{iO} = zeros(0,3);
         continue
     end
 
@@ -243,10 +246,14 @@ for iO = 1:nO
     stats.organelleBoundaryDistancePix(iO,1)   = min(points(:,3));
     stats.organelleBoundaryDistance(iO,1)      = min(points(:,3)) .* calibration;
 
-    plSeg = arrayfun(@(x1,y1,x2,y2) [x1 y1; x2 y2; nan nan], ...
-        sampled(:,2), sampled(:,1), points(:,1), points(:,2), 'UniformOutput', false);
-    plotLinesCell{iO}  = [nan nan; cat(1, plSeg{:})];
-    plotPointsCell{iO} = [nan nan; points(:,1:2)];
+    % Distance is carried through as a third column on both plotLines and
+    % plotPoints -- not rendered with colour yet for the radial lines, but
+    % ready for it: see funcRoiOverlay's 'd2Er'/'d2Organelle' scatter case
+    % for the points side, which already does colour by this value.
+    plSeg = arrayfun(@(x1,y1,x2,y2,d) [x1 y1 d; x2 y2 d; nan nan nan], ...
+        sampled(:,2), sampled(:,1), points(:,1), points(:,2), points(:,3), 'UniformOutput', false);
+    plotLinesCell{iO}  = [nan nan nan; cat(1, plSeg{:})];
+    plotPointsCell{iO} = [nan nan nan; points];
 end
 
 plotLines  = cat(1, plotLinesCell{:});
