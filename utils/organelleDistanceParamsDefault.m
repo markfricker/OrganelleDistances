@@ -28,6 +28,16 @@ function p = organelleDistanceParamsDefault()
 %   neighborRadius  µm; radius used for the neighbour-count / percent-
 %                   perimeter-near clustering readout.
 %
+%   organelleShuffleTest (organelle -> target proximity vs chance)
+%   ----------------------------------------------------------------------
+%   shuffleNSimulations    Object shuffles per cell (min one-sided p is
+%                          1/(n+1), so 99 -> 0.01, 199 -> 0.005).
+%   shuffleDihedral        Also randomly rotate/flip (90-degree steps)
+%                          each shuffled object; false = translate only.
+%   shuffleRestrictTarget  Only target pixels in the same cell count.
+%   shuffleTouchDistance   um; distance counted as "touching" the target.
+%   shuffleAlpha           Pointwise envelope width (display only).
+%
 %   Acquisition
 %   ----------------------------------------------------------------------
 %   pixelSize    µm per pixel (calibration).
@@ -40,6 +50,12 @@ p.d2ErRadius  = 50;     % px search length toward the ER
 
 p.nnRadius        = 50; % px search length toward other objects
 p.neighborRadius  = 1;  % um; "crowded" cutoff for neighbour-count/pct-near
+
+p.shuffleNSimulations   = 99;
+p.shuffleDihedral       = false;
+p.shuffleRestrictTarget = true;
+p.shuffleTouchDistance  = 0;     % um
+p.shuffleAlpha          = 0.05;
 
 p.pixelSize   = 0.09;   % um/px
 end
