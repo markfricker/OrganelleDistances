@@ -1,11 +1,11 @@
 function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErCompute( ...
     morphologyStats, erSkeleton, erCisternae, cellBoundary, edgelist, ...
-    Cidx, calibration, span, radius)
+    Cidx, calibration, span, radius, contactDistance)
 %ORGANELLED2ERCOMPUTE  Radial nearest-distance from organelle membranes to the ER.
 %
 %   [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErCompute( ...
 %       morphologyStats, erSkeleton, erCisternae, cellBoundary, edgelist, ...
-%       Cidx, calibration, span, radius)
+%       Cidx, calibration, span, radius, contactDistance)
 %
 % Casts outward rays from a spline-smoothed resampling of every object's
 % perimeter and finds the nearest intersection with the ER polyline
@@ -47,12 +47,30 @@ function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErComp
 %                     (less pixel-jagged) normals.
 %   radius          – outward ray search length (px) -- maps directly to
 %                     the ray-cast core's opts.maxRange.
+%   contactDistance – (optional) µm tolerance for ER contact length. When
+%                     given, adds organelleErContactFraction (fraction of
+%                     the organelle's perimeter pixels within
+%                     contactDistance of the ER target, overlapping pixels
+%                     count as 0) and organelleErContactLength (that
+%                     fraction x organellePerimeter in µm, or x perimeter
+%                     pixel count x calibration if organellePerimeter is
+%                     absent). Direction-agnostic (Euclidean distance
+%                     transform, like DiAna's dilation-based contact
+%                     surface) rather than the normal ray-cast, so an ER
+%                     tubule running alongside the organelle counts along
+%                     its whole length. NOTE: the target is the ER
+%                     skeleton centreline (+ cisternae), so the tolerance
+%                     effectively includes the tubule half-width.
 %
 % OUTPUTS
 %   d2ErStats       – {nCh x nZ x nT} cell array; each cell is statsIn
 %                     augmented with organelleErOverlapArea/Idx,
 %                     organelleRadialIdxList, organelleErDistancePix,
-%                     organelleErDistance.
+%                     organelleErDistance (+ organelleErContactFraction /
+%                     organelleErContactLength when contactDistance given).
+%                     NB organelleErOverlapArea counts organelle pixels ON
+%                     the ER target, i.e. for tubules the 1-px centreline
+%                     crossing the organelle, not a full-width footprint.
 %   morphologyStats – input morphologyStats with the ER-distance columns
 %                     written back into the processed channel slots, so the
 %                     caller holds a single updated table (no GUI needed).
@@ -61,6 +79,10 @@ function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErComp
 %                     each ray, NaN-separated between rays).
 %   plotPoints      – {nCh x nZ x nT} cell array of [* x 3] contact points
 %                     [x y distance].
+
+if nargin < 10
+    contactDistance = [];
+end
 
 [nC_in, nZ, nT] = size(morphologyStats);
 nCh             = numel(Cidx);
@@ -133,7 +155,7 @@ for iT = 1:nT
 
             % --- per-plane geometry (local subfunction) ------------------
             [stats, pLines, pPoints] = planeD2Er( ...
-                statsIn, ER, erMaskVec, cellBg, nY, nX, calibration, span, radius);
+                statsIn, ER, erMaskVec, cellBg, nY, nX, calibration, span, radius, contactDistance);
 
             d2ErStats{iCh, iZ, iT}       = stats;
             morphologyStats{iC, iZ, iT}  = stats;   % write ER columns back
@@ -148,7 +170,7 @@ end % organelleD2ErCompute
 
 % =========================================================================
 function [stats, plotLines, plotPoints] = planeD2Er( ...
-    statsIn, ER, erMaskVec, cellBg, nY, nX, calibration, span, radius)
+    statsIn, ER, erMaskVec, cellBg, nY, nX, calibration, span, radius, contactDistance)
 %PLANED2ER  Single-plane worker — see organelleD2ErCompute for argument docs.
 
 pixList   = statsIn.organellePixelIdxList;
@@ -271,6 +293,30 @@ end
 hasOverlap = stats.organelleErOverlapArea > 0;
 stats.organelleErDistancePix(hasOverlap) = 0;
 stats.organelleErDistance(hasOverlap)    = 0;
+
+% ER contact length: perimeter pixels within contactDistance of the ER
+% target, direction-agnostic (DRescue is the full-plane distance transform
+% of the same ER target). NaN when there is no ER in the plane at all.
+if ~isempty(contactDistance)
+    hasEr = any(erMaskVec);
+    contactFrac = nan(nO, 1);
+    contactLen  = nan(nO, 1);
+    hasPerimLen = ismember('organellePerimeter', stats.Properties.VariableNames);
+    for iO = 1:nO
+        perim = perimList{iO,1};
+        if isempty(perim) || ~hasEr
+            continue
+        end
+        contactFrac(iO) = mean(double(DRescue(perim)) .* calibration <= contactDistance);
+        if hasPerimLen
+            contactLen(iO) = contactFrac(iO) .* stats.organellePerimeter(iO);
+        else
+            contactLen(iO) = contactFrac(iO) .* numel(perim) .* calibration;
+        end
+    end
+    stats.organelleErContactFraction = contactFrac;
+    stats.organelleErContactLength   = contactLen;
+end
 
 plotLines  = cat(1, plotLinesCell{:});
 plotPoints = cat(1, plotPointsCell{:});

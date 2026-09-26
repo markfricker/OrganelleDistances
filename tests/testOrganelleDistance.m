@@ -224,6 +224,40 @@ classdef testOrganelleDistance < matlab.unittest.TestCase
 
             tc.verifyEqual(min(radial(:,3)), stats.organelleErDistancePix(1), 'AbsTol', 1e-9);
         end
+
+        function testD2ErContactLengthAlongsideTubule(tc)
+            % 20x20 px square (rows 90:109, cols 50:69); 1-px ER line at
+            % col 72, i.e. 3 px from the square's right edge and never
+            % overlapping it. Calibration 0.1 um/px.
+            imSize = tc.ImSize;
+            labelIm = zeros(imSize);
+            labelIm(90:109, 50:69) = 1;
+            statsIn = tc.statsFromLabelIm(labelIm);
+            er = false(imSize);
+            er(:, 72) = true;
+            erImg = reshape(er, imSize(1), imSize(2), 1, 1, 1);
+            nPerim = numel(statsIn.organellePerimeterIdxList{1});
+
+            % tolerance 0.35 um = 3.5 px: exactly the 20 right-edge pixels
+            [~, morphOut] = organelleD2ErCompute({statsIn}, erImg, [], [], {cell(0,1)}, 1, 0.1, 1, 100, 0.35);
+            s = morphOut{1};
+            tc.verifyEqual(s.organelleErOverlapArea(1), 0);       % overlap misses it...
+            tc.verifyEqual(s.organelleErContactFraction(1), 20/nPerim, 'AbsTol', 1e-12);  % ...contact doesn't
+            tc.verifyEqual(s.organelleErContactLength(1), 20*0.1, 'AbsTol', 1e-9);
+
+            % tolerance below the gap: no contact
+            [~, morphOut] = organelleD2ErCompute({statsIn}, erImg, [], [], {cell(0,1)}, 1, 0.1, 1, 100, 0.25);
+            tc.verifyEqual(morphOut{1}.organelleErContactFraction(1), 0);
+
+            % uses organellePerimeter (um) for the length when present
+            statsIn.organellePerimeter = 7.5;
+            [~, morphOut] = organelleD2ErCompute({statsIn}, erImg, [], [], {cell(0,1)}, 1, 0.1, 1, 100, 0.35);
+            tc.verifyEqual(morphOut{1}.organelleErContactLength(1), 7.5*20/nPerim, 'AbsTol', 1e-9);
+
+            % contactDistance omitted: columns not added (backward compatible)
+            [~, morphOut] = organelleD2ErCompute({statsIn}, erImg, [], [], {cell(0,1)}, 1, 0.1, 1, 100);
+            tc.verifyFalse(ismember('organelleErContactFraction', morphOut{1}.Properties.VariableNames));
+        end
     end
 
     % =====================================================================
