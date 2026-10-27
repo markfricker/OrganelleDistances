@@ -63,11 +63,15 @@ function [d2ErStats, morphologyStats, plotLines, plotPoints] = organelleD2ErComp
 %                     effectively includes the tubule half-width.
 %
 % OUTPUTS
-%   d2ErStats       – {nCh x nZ x nT} cell array; each cell is statsIn
-%                     augmented with organelleErOverlapArea/Idx,
+%   d2ErStats       – {nCh x nZ x nT} cell array; each cell holds the
+%                     identifier columns of statsIn (filename, frame,
+%                     section, channel, cellID, organelleID, calibration)
+%                     and organelleErOverlapArea/Idx,
 %                     organelleRadialIdxList, organelleErDistancePix,
 %                     organelleErDistance (+ organelleErContactFraction /
-%                     organelleErContactLength when contactDistance given).
+%                     organelleErContactLength when contactDistance given)
+%                     -- not the other steps' morphologyStats columns, so a
+%                     re-run gives the same table.
 %                     NB organelleErOverlapArea counts organelle pixels ON
 %                     the ER target, i.e. for tubules the 1-px centreline
 %                     crossing the organelle, not a full-width footprint.
@@ -157,7 +161,9 @@ for iT = 1:nT
             [stats, pLines, pPoints] = planeD2Er( ...
                 statsIn, ER, erMaskVec, cellBg, nY, nX, calibration, span, radius, contactDistance);
 
-            d2ErStats{iCh, iZ, iT}       = stats;
+            d2ErStats{iCh, iZ, iT}       = stepColumns(stats, {'organelleErOverlapArea', ...
+                'organelleErOverlapIdx', 'organelleRadialIdxList', 'organelleErDistancePix', ...
+                'organelleErDistance', 'organelleErContactFraction', 'organelleErContactLength'});
             morphologyStats{iC, iZ, iT}  = stats;   % write ER columns back
             plotLines{iCh, iZ, iT}       = pLines;
             plotPoints{iCh, iZ, iT}      = pPoints;
@@ -166,6 +172,15 @@ for iT = 1:nT
 end
 
 end % organelleD2ErCompute
+
+
+% =========================================================================
+function T = stepColumns(stats, own)
+%STEPCOLUMNS  The identifier columns of a morphology table plus this step's own.
+ids = {'filename','frame','section','channel','cellID','organelleID','calibration'};
+v   = stats.Properties.VariableNames;
+T   = stats(:, [v(ismember(v, ids)), own(ismember(own, v))]);
+end
 
 
 % =========================================================================

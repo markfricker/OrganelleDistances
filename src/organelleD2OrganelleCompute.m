@@ -72,9 +72,12 @@ function [morphologyStats, d2OrganelleStats, plotLines, plotPoints] = organelleD
 %                                    perimeter sample within neighborRadius
 %       organelleNnPctNear        – % of perimeter samples within
 %                                    neighborRadius of another object
-%   d2OrganelleStats    – {nCh x nZ x nT} cell array; same tables as
-%                         written into morphologyStats, for callers that
-%                         want the per-step result without re-deriving it.
+%   d2OrganelleStats    – {nCh x nZ x nT} cell array; the identifier
+%                         columns (filename, frame, section, channel,
+%                         cellID, organelleID, calibration) and the six
+%                         columns above only, so it does not depend on
+%                         which other steps (D2Er, boundary distance,
+%                         physiology) have added columns to morphologyStats.
 %   plotLines           – {nCh x nZ x nT} cell array of [* x 3] overlay
 %                         lines [x y distance] (source point -> nearest-
 %                         neighbour point, distance repeated at both ends).
@@ -104,7 +107,9 @@ for iT = 1:nT
             [stats, pLines, pPoints] = planeD2Organelle( ...
                 statsIn, imSize, calibration, span, radius, neighborRadiusPix, reachPix);
 
-            d2OrganelleStats{iCh, iZ, iT} = stats;
+            d2OrganelleStats{iCh, iZ, iT} = stepColumns(stats, {'organelleNnDistancePix', ...
+                'organelleNnDistance', 'organelleNnID', 'organelleNnRadialIdxList', ...
+                'organelleNeighborCount', 'organelleNnPctNear'});
             morphologyStats{iC, iZ, iT}   = stats;
             plotLines{iCh, iZ, iT}        = pLines;
             plotPoints{iCh, iZ, iT}       = pPoints;
@@ -113,6 +118,15 @@ for iT = 1:nT
 end
 
 end % organelleD2OrganelleCompute
+
+
+% =========================================================================
+function T = stepColumns(stats, own)
+%STEPCOLUMNS  The identifier columns of a morphology table plus this step's own.
+ids = {'filename','frame','section','channel','cellID','organelleID','calibration'};
+v   = stats.Properties.VariableNames;
+T   = stats(:, [v(ismember(v, ids)), own(ismember(own, v))]);
+end
 
 
 % =========================================================================
